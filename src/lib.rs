@@ -128,26 +128,45 @@ impl Cookie {
         self.domain_end.and_then(|e| self.domain_value_start().map(|s| self.slice(s..e)))
     }
 
+    #[inline]
+    fn domain_end_or_prior(&self) -> usize {
+        self.domain_end.unwrap_or(self.value_end)
+    }
+
     pub fn set_domain(&mut self, domain: &str) -> &mut Self {
         let domain = domain.trim();
-        self.domain_end = match self.domain_value_start() {
-            Some(s) => {
-                if 0 != domain.len() {
-                    self.serialization.truncate(s);
-                    self.serialization.push_str(domain);
-                    Some(self.serialization.len())
-                } else {
-                    self.serialization.truncate(self.value_end);
-                    None
-                }
+        let old_domain_end = self.domain_end_or_prior();
+        let (new_domain_end, suffix) = match self.domain_value_start() {
+            // Some(_) cases imply domain_end.is_some(), so unwrap()'s safe
+            Some(_) if 0 == domain.len() => {
+                self.serialization.drain(self.value_end..self.domain_end.unwrap());
+                (None, None)
             }
-            None if 0 == domain.len() => None,
+            Some(domain_value_start) => {
+                let suffix = Some(self.slice(self.domain_end.unwrap()..).to_owned());
+                self.serialization.truncate(domain_value_start);
+                self.serialization.push_str(domain);
+                (Some(self.serialization.len()), suffix)
+            }
+            None if 0 == domain.len() => (None, None),
             None => {
+                let suffix = Some(self.slice(self.value_end..).to_owned());
+                self.serialization.truncate(self.value_end);
                 self.serialization.push_str("; Domain=");
                 self.serialization.push_str(domain);
-                Some(self.serialization.len())
+                (Some(self.serialization.len()), suffix)
             }
         };
+
+        if let Some(ref suffix) = suffix {
+            self.serialization.push_str(suffix);
+        }
+
+        self.domain_end = new_domain_end;
+        if let Some(ref mut index) = self.path_end {
+            *index -= old_domain_end;
+            *index += new_domain_end.unwrap_or(self.value_end);
+        }
         self
     }
 
@@ -155,26 +174,42 @@ impl Cookie {
         self.path_end.and_then(|e| self.path_value_start().map(|s| self.slice(s..e)))
     }
 
+    #[inline]
+    fn path_end_or_prior(&self) -> usize {
+        self.path_end.unwrap_or_else(|| self.domain_end_or_prior())
+    }
+
     pub fn set_path(&mut self, path: &str) -> &mut Self {
         let path = path.trim();
-        self.path_end = match self.path_value_start() {
-            Some(s) => {
-                if 0 != path.len() {
-                    self.serialization.truncate(s);
-                    self.serialization.push_str(path);
-                    Some(self.serialization.len())
-                } else {
-                    self.serialization.truncate(self.value_end);
-                    None
-                }
+        let (new_path_end, suffix) = match self.path_value_start() {
+            // Some(_) cases imply path_end.is_some(), so unwrap()'s safe
+            Some(_) if 0 == path.len() => {
+                let drain_from = self.domain_end_or_prior();
+                self.serialization.drain(drain_from..self.path_end.unwrap());
+                (None, None)
             }
-            None if 0 == path.len() => None,
+            Some(path_value_start) => {
+                let suffix = Some(self.slice(self.path_end.unwrap()..).to_owned());
+                self.serialization.truncate(path_value_start);
+                self.serialization.push_str(path);
+                (Some(self.serialization.len()), suffix)
+            }
+            None if 0 == path.len() => (None, None),
             None => {
+                let trunc_from = self.domain_end_or_prior();
+                let suffix = Some(self.slice(trunc_from..).to_owned());
+                self.serialization.truncate(trunc_from);
                 self.serialization.push_str("; Path=");
                 self.serialization.push_str(path);
-                Some(self.serialization.len())
+                (Some(self.serialization.len()), suffix)
             }
         };
+
+        if let Some(ref suffix) = suffix {
+            self.serialization.push_str(suffix);
+        }
+
+        self.path_end = new_path_end;
         self
     }
 
@@ -242,7 +277,7 @@ impl Cookie {
 
     #[inline]
     fn path_value_start(&self) -> Option<usize> {
-        self.path_end.map(|_| self.value_end + "; Path=".len())
+        self.path_end.map(|_| self.domain_end.unwrap_or(self.value_end) + "; Path=".len())
     }
 
     #[inline]
@@ -353,6 +388,36 @@ mod tests {
         c.set_path("  ");
         assert_eq!(c.path(), None);
         assert_eq!(c.as_str(), "foo=bar");
+
+        c.set_domain("www.example.com");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.path(), None);
+        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com");
+        c.set_path("/foo/bus/bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar");
+        c.set_domain("");
+        assert_eq!(c.domain(), None);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.as_str(), "foo=bar; Path=/foo/bus/bar");
+        c.set_domain("www.example.com");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar");
+
+        c.set_domain("");
+        assert_eq!(c.domain(), None);
+        c.set_domain("www.example.com");
+        c.set_domain("  ");
+        assert_eq!(c.domain(), None);
+        c.set_path("");
+        assert_eq!(c.path(), None);
+        c.set_path("/foo/bus/bar");
+        c.set_path("  ");
+        assert_eq!(c.path(), None);
 
         assert_eq!(c.secure(), false);
         c.set_secure(true);
