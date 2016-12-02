@@ -136,26 +136,16 @@ impl Cookie {
     pub fn set_domain(&mut self, domain: &str) -> &mut Self {
         let domain = domain.trim();
         let old_domain_end = self.domain_end_or_prior();
-        let (new_domain_end, suffix) = match self.domain_value_start() {
-            // Some(_) cases imply domain_end.is_some(), so unwrap()'s safe
-            Some(_) if 0 == domain.len() => {
-                self.serialization.drain(self.value_end..self.domain_end.unwrap());
-                (None, None)
-            }
-            Some(domain_value_start) => {
-                let suffix = Some(self.slice(self.domain_end.unwrap()..).to_owned());
-                self.serialization.truncate(domain_value_start);
-                self.serialization.push_str(domain);
-                (Some(self.serialization.len()), suffix)
-            }
-            None if 0 == domain.len() => (None, None),
-            None => {
-                let suffix = Some(self.slice(self.value_end..).to_owned());
-                self.serialization.truncate(self.value_end);
-                self.serialization.push_str("; Domain=");
-                self.serialization.push_str(domain);
-                (Some(self.serialization.len()), suffix)
-            }
+
+        let (new_domain_end, suffix) = {
+            let old_value_start = self.domain_value_start();
+            let old_value_end = self.domain_end;
+            let preceding_end = self.value_end;
+            self.set_attr_value("Domain",
+                                domain,
+                                old_value_start,
+                                old_value_end,
+                                preceding_end)
         };
 
         if let Some(ref suffix) = suffix {
@@ -181,28 +171,11 @@ impl Cookie {
 
     pub fn set_path(&mut self, path: &str) -> &mut Self {
         let path = path.trim();
-        let (new_path_end, suffix) = match self.path_value_start() {
-            // Some(_) cases imply path_end.is_some(), so unwrap()'s safe
-            Some(_) if 0 == path.len() => {
-                let drain_from = self.domain_end_or_prior();
-                self.serialization.drain(drain_from..self.path_end.unwrap());
-                (None, None)
-            }
-            Some(path_value_start) => {
-                let suffix = Some(self.slice(self.path_end.unwrap()..).to_owned());
-                self.serialization.truncate(path_value_start);
-                self.serialization.push_str(path);
-                (Some(self.serialization.len()), suffix)
-            }
-            None if 0 == path.len() => (None, None),
-            None => {
-                let trunc_from = self.domain_end_or_prior();
-                let suffix = Some(self.slice(trunc_from..).to_owned());
-                self.serialization.truncate(trunc_from);
-                self.serialization.push_str("; Path=");
-                self.serialization.push_str(path);
-                (Some(self.serialization.len()), suffix)
-            }
+        let (new_path_end, suffix) = {
+            let old_value_start = self.path_value_start();
+            let old_value_end = self.path_end;
+            let preceding_end = self.domain_end_or_prior();
+            self.set_attr_value("Path", path, old_value_start, old_value_end, preceding_end)
         };
 
         if let Some(ref suffix) = suffix {
@@ -211,6 +184,37 @@ impl Cookie {
 
         self.path_end = new_path_end;
         self
+    }
+
+    fn set_attr_value(&mut self,
+                      attr_name: &str,
+                      new_value: &str,
+                      old_value_start: Option<usize>,
+                      old_value_end: Option<usize>,
+                      preceding_end: usize)
+                      -> (Option<usize>, Option<String>) {
+        match old_value_start {
+            Some(_) if 0 == new_value.len() => {
+                self.serialization.drain(preceding_end..old_value_end.unwrap());
+                (None, None)
+            }
+            Some(old_value_start) => {
+                let suffix = Some(self.slice(old_value_end.unwrap()..).to_owned());
+                self.serialization.truncate(old_value_start);
+                self.serialization.push_str(new_value);
+                (Some(self.serialization.len()), suffix)
+            }
+            None if 0 == new_value.len() => (None, None),
+            None => {
+                let suffix = Some(self.slice(preceding_end..).to_owned());
+                self.serialization.truncate(preceding_end);
+                self.serialization.push_str("; ");
+                self.serialization.push_str(attr_name);
+                self.serialization.push_str("=");
+                self.serialization.push_str(new_value);
+                (Some(self.serialization.len()), suffix)
+            }
+        }
     }
 
     pub fn set_secure(&mut self, secure: bool) -> &mut Self {
