@@ -54,7 +54,7 @@ pub struct Cookie {
     value_end: usize,
     // although ordering of these attributes is not defined in the RFC,
     // we enforce the ordering is Domain, Path, Secure, HttpOnly, Expires
-    // during parsing/serialization. specifically, Secure, HttpOnly, and Expires
+    // during serialization. specifically, Secure, HttpOnly, and Expires
     // are at the end of the serialization as they are all of a known fixed size
     // when present, with Expires last to simplify replacing its value
     domain_end: Option<usize>,
@@ -97,12 +97,12 @@ impl Cookie {
         let new_name_end = name.len();
 
         self.name_end = new_name_end;
-        Self::adjust(&mut self.value_end, old_name_end, new_name_end);
+        adjust(&mut self.value_end, old_name_end, new_name_end);
         if let Some(ref mut index) = self.domain_end {
-            Self::adjust(index, old_name_end, new_name_end);
+            adjust(index, old_name_end, new_name_end);
         }
         if let Some(ref mut index) = self.path_end {
-            Self::adjust(index, old_name_end, new_name_end);
+            adjust(index, old_name_end, new_name_end);
         }
 
         name.push_str(self.slice(old_name_end..));
@@ -144,10 +144,10 @@ impl Cookie {
 
         self.value_end = new_value_end;
         if let Some(ref mut index) = self.domain_end {
-            Self::adjust(index, old_value_end, new_value_end);
+            adjust(index, old_value_end, new_value_end);
         }
         if let Some(ref mut index) = self.path_end {
-            Self::adjust(index, old_value_end, new_value_end);
+            adjust(index, old_value_end, new_value_end);
         }
 
         self
@@ -195,7 +195,7 @@ impl Cookie {
         self.domain_end = new_domain_end;
         let new_domain_end = self.domain_end_or_prior();
         if let Some(ref mut index) = self.path_end {
-            Self::adjust(index, old_domain_end, new_domain_end);
+            adjust(index, old_domain_end, new_domain_end);
         }
 
         self
@@ -398,12 +398,12 @@ impl Cookie {
     pub fn into_string(self) -> String {
         self.serialization
     }
+}
 
-    #[inline]
-    fn adjust(index: &mut usize, old: usize, new: usize) {
-        *index -= old;
-        *index += new;
-    }
+#[inline]
+fn adjust(index: &mut usize, old: usize, new: usize) {
+    *index -= old;
+    *index += new;
 }
 
 // TODO: impl From<cookie::Cookie>, Into<cookie::Cookie>
