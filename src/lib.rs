@@ -11,6 +11,12 @@ lazy_static! {
             .unwrap();
 }
 
+const DOMAIN_PREFIX: &'static str = "; Domain=";
+const PATH_PREFIX: &'static str = "; Path=";
+const SECURE_ATTR: &'static str = "; Secure";
+const HTTPONLY_ATTR: &'static str = "; HttpOnly";
+const EXPIRES_PREFIX: &'static str = "; Expires=";
+
 trait RangeArg {
     fn slice_of<'a>(&self, s: &'a str) -> &'a str;
 }
@@ -36,20 +42,27 @@ impl RangeArg for RangeTo<usize> {
     }
 }
 
+// FIXME: CookieOven
+// impl .bake() -> WarmCookie (String wrapper)
+// TODO: enforce Domain (option?)
+// TODO: enforce Path (option?)
+// TODO: non-local domain checking (option?)
+// TODO: custom attributes?
 pub struct Cookie {
     serialization: String,
     name_end: usize,
     value_end: usize,
     // although ordering of these attributes is not defined in the RFC,
-    // we enforce the ordering is Expires, Domain, Path, Secure, HttpOnly
-    // during parsing/serialization
-    // FIXME: impl Max-Age
-    // FIXME: if Expires were at the end, less resizing
-    expires_end: Option<usize>,
+    // we enforce the ordering is Domain, Path, Secure, HttpOnly, Expires
+    // during parsing/serialization. specifically, Secure, HttpOnly, and Expires
+    // are at the end of the serialization as they are all of a known fixed size
+    // when present, with Expires last to simplify replacing its value
     domain_end: Option<usize>,
     path_end: Option<usize>,
+    // FIXME: impl Max-Age
     secure: bool,
     httponly: bool,
+    expires: Option<Tm>,
 }
 
 impl Cookie {
@@ -62,11 +75,11 @@ impl Cookie {
             serialization: s,
             name_end: name.len(),
             value_end: value_end,
-            expires_end: None,
             domain_end: None,
             path_end: None,
             secure: false,
             httponly: false,
+            expires: None,
         }
     }
 
@@ -83,20 +96,13 @@ impl Cookie {
         let old_name_end = self.name_end;
         let new_name_end = name.len();
 
-        let adjust = |index: &mut usize| {
-            *index -= old_name_end;
-            *index += new_name_end;
-        };
         self.name_end = new_name_end;
-        adjust(&mut self.value_end);
-        if let Some(ref mut index) = self.expires_end {
-            adjust(index);
-        }
+        Self::adjust(&mut self.value_end, old_name_end, new_name_end);
         if let Some(ref mut index) = self.domain_end {
-            adjust(index);
+            Self::adjust(index, old_name_end, new_name_end);
         }
         if let Some(ref mut index) = self.path_end {
-            adjust(index);
+            Self::adjust(index, old_name_end, new_name_end);
         }
 
         name.push_str(self.slice(old_name_end..));
@@ -116,28 +122,32 @@ impl Cookie {
     pub fn set_value(&mut self, value: &str) -> &mut Self {
         let value = value.trim();
         let old_value_end = self.value_end;
-        let suffix = match (self.domain_attr_start(), self.path_attr_start()) {
-            (None, None) => None,
-            (Some(i), _) => Some(self.slice(i..).to_owned()),
-            (None, Some(i)) => Some(self.slice(i..).to_owned()),
+        let suffix = {
+            let s = self.slice(old_value_end..);
+            if 0 == s.len() {
+                None
+            } else {
+                Some(s.to_owned())
+            }
         };
-        self.serialization.truncate(self.name_end + "=".len());
-        self.serialization.push_str(value);
-        let new_value_end = self.serialization.len();
-        if let Some(s) = suffix {
-            self.serialization.push_str(&s);
+
+        let new_value_end = {
+            let value_start = self.value_start();
+            self.serialization.truncate(value_start);
+            self.serialization.push_str(value);
+            self.serialization.len()
+        };
+
+        if let Some(ref s) = suffix {
+            self.serialization.push_str(s);
         }
 
-        let adjust = |index: &mut usize| {
-            *index -= old_value_end;
-            *index -= new_value_end;
-        };
         self.value_end = new_value_end;
         if let Some(ref mut index) = self.domain_end {
-            adjust(index);
+            Self::adjust(index, old_value_end, new_value_end);
         }
         if let Some(ref mut index) = self.path_end {
-            adjust(index);
+            Self::adjust(index, old_value_end, new_value_end);
         }
 
         self
@@ -147,119 +157,47 @@ impl Cookie {
         (self.slice(..self.name_end), self.slice(self.value_start()..self.value_end))
     }
 
-    pub fn expires(&self) -> Option<&str> {
-        self.expires_end.and_then(|e| self.expires_value_start().map(|s| self.slice(s..e)))
-    }
-
-    #[inline]
-    fn expires_attr_start(&self) -> Option<usize> {
-        self.expires_end.map(|_| self.value_end + "; ".len())
-    }
-
-    #[inline]
-    fn expires_value_start(&self) -> Option<usize> {
-        self.expires_end.map(|_| self.value_end + "; Expires=".len())
-    }
-
-    #[inline]
-    fn expires_end_or_prior(&self) -> usize {
-        self.expires_end.unwrap_or(self.value_end)
-    }
-
-    pub fn expire(&mut self) -> &mut Self {
-        self.set_expires(Some(*EARLIEST_TM))
-    }
-
-    pub fn set_expires(&mut self, expires: Option<Tm>) -> &mut Self {
-        let expires_utc = expires.map(|e| e.to_utc());
-        let expires = expires_utc.map(|u| format!("{}", u.rfc822()));
-        if self.expires() == expires.as_ref().map(|s| &s[..]) {
-            return self;
-        }
-        let old_expires_end = self.expires_end_or_prior();
-        let (new_expires_end, suffix) = match (self.expires_end, expires) {
-            (None, None) => return self, // actually handle by prior early return
-            (Some(_), None) => {
-                self.serialization.drain(self.value_end..old_expires_end);
-                (None, None)
-            }
-            (Some(old_expires_end), Some(expires)) => {
-                let trunc_from = self.expires_value_start().unwrap();
-                let suffix = self.truncate_and_take(trunc_from, old_expires_end);
-                self.serialization.push_str(&expires);
-                (Some(self.serialization.len()), Some(suffix))
-            }
-            (None, Some(expires)) => {
-                let take_from = self.value_end;
-                let suffix = self.take(take_from);
-                self.serialization.push_str("; Expires=");
-                self.serialization.push_str(&expires);
-                (Some(self.serialization.len()), Some(suffix))
-            }
-        };
-
-        if let Some(ref suffix) = suffix {
-            self.serialization.push_str(suffix);
-        }
-
-        self.expires_end = new_expires_end;
-        let new_expires_end = self.expires_end_or_prior();
-        let adjust = |index: &mut usize| {
-            *index -= old_expires_end;
-            *index += new_expires_end;
-        };
-        if let Some(ref mut index) = self.domain_end {
-            adjust(index);
-        }
-        if let Some(ref mut index) = self.path_end {
-            adjust(index);
-        }
-        self
-    }
-
     pub fn domain(&self) -> Option<&str> {
         self.domain_end.and_then(|e| self.domain_value_start().map(|s| self.slice(s..e)))
     }
 
     #[inline]
-    fn domain_attr_start(&self) -> Option<usize> {
-        self.domain_end.map(|_| self.expires_end_or_prior() + "; ".len())
-    }
-
-    #[inline]
     fn domain_value_start(&self) -> Option<usize> {
-        self.domain_end.map(|_| self.expires_end_or_prior() + "; Domain=".len())
+        self.domain_end.map(|_| self.value_end + DOMAIN_PREFIX.len())
     }
 
     #[inline]
     fn domain_end_or_prior(&self) -> usize {
-        self.domain_end.unwrap_or_else(|| self.expires_end_or_prior())
+        self.domain_end.unwrap_or_else(|| self.value_end)
     }
 
     pub fn set_domain(&mut self, domain: &str) -> &mut Self {
         let domain = domain.trim();
         let old_domain_end = self.domain_end_or_prior();
 
-        let (new_domain_end, suffix) = {
+        let new_domain_end = {
             let old_value_start = self.domain_value_start();
             let old_value_end = self.domain_end;
             let preceding_end = self.value_end;
-            self.set_attr_value("Domain",
-                                domain,
-                                old_value_start,
-                                old_value_end,
-                                preceding_end)
+            let (new_domain_end, suffix) = self.set_attr_value(DOMAIN_PREFIX,
+                                                               domain,
+                                                               old_value_start,
+                                                               old_value_end,
+                                                               preceding_end);
+
+            if let Some(ref suffix) = suffix {
+                self.serialization.push_str(suffix);
+            }
+
+            new_domain_end
         };
 
-        if let Some(ref suffix) = suffix {
-            self.serialization.push_str(suffix);
+        self.domain_end = new_domain_end;
+        let new_domain_end = self.domain_end_or_prior();
+        if let Some(ref mut index) = self.path_end {
+            Self::adjust(index, old_domain_end, new_domain_end);
         }
 
-        self.domain_end = new_domain_end;
-        if let Some(ref mut index) = self.path_end {
-            *index -= old_domain_end;
-            *index += new_domain_end.unwrap_or(self.value_end);
-        }
         self
     }
 
@@ -268,13 +206,8 @@ impl Cookie {
     }
 
     #[inline]
-    fn path_attr_start(&self) -> Option<usize> {
-        self.path_end.map(|_| self.domain_end.unwrap_or(self.value_end) + "; ".len())
-    }
-
-    #[inline]
     fn path_value_start(&self) -> Option<usize> {
-        self.path_end.map(|_| self.domain_end_or_prior() + "; Path=".len())
+        self.path_end.map(|_| self.domain_end_or_prior() + PATH_PREFIX.len())
     }
 
     #[inline]
@@ -284,47 +217,24 @@ impl Cookie {
 
     pub fn set_path(&mut self, path: &str) -> &mut Self {
         let path = path.trim();
-        let (new_path_end, suffix) = {
+        let new_path_end = {
             let old_value_start = self.path_value_start();
             let old_value_end = self.path_end;
             let preceding_end = self.domain_end_or_prior();
-            self.set_attr_value("Path", path, old_value_start, old_value_end, preceding_end)
+            let (new_path_end, suffix) = self.set_attr_value(PATH_PREFIX,
+                                                             path,
+                                                             old_value_start,
+                                                             old_value_end,
+                                                             preceding_end);
+
+            if let Some(ref suffix) = suffix {
+                self.serialization.push_str(suffix);
+            }
+
+            new_path_end
         };
 
-        if let Some(ref suffix) = suffix {
-            self.serialization.push_str(suffix);
-        }
-
         self.path_end = new_path_end;
-        self
-    }
-
-    #[inline]
-    fn domain_path_end(&self) -> usize {
-        match (self.domain_end, self.path_end) {
-            (None, None) => self.value_end,
-            (_, Some(e)) | (Some(e), _) => e,
-        }
-    }
-
-    pub fn set_secure(&mut self, secure: bool) -> &mut Self {
-        if self.secure != secure {
-            let end = self.domain_path_end();
-            self.serialization.truncate(end);
-            match (secure, self.httponly) {
-                (true, true) => {
-                    self.serialization.push_str("; Secure; HttpOnly");
-                }
-                (true, false) => {
-                    self.serialization.push_str("; Secure");
-                }
-                (false, true) => {
-                    self.serialization.push_str("; HttpOnly");
-                }
-                (false, false) => {}
-            }
-            self.secure = secure;
-        }
         self
     }
 
@@ -333,33 +243,83 @@ impl Cookie {
     }
 
     #[inline]
-    fn secure_start(&self) -> Option<usize> {
-        if !self.secure {
-            None
-        } else {
-            Some(self.domain_path_end() + "; ".len())
-        }
+    fn secure_end_or_prior(&self) -> usize {
+        self.path_end_or_prior() + if self.secure { SECURE_ATTR.len() } else { 0 }
     }
 
-    #[inline]
-    fn secure_end(&self) -> Option<usize> {
-        self.secure_start().map(|s| s + "Secure".len())
+    pub fn set_secure(&mut self, secure: bool) -> &mut Self {
+        if self.secure != secure {
+            let preceding_end = self.path_end_or_prior();
+            let old_secure = self.secure;
+            self.set_flag_str(preceding_end, SECURE_ATTR, old_secure, secure);
+            self.secure = secure;
+        }
+        self
     }
 
     pub fn httponly(&self) -> bool {
         self.httponly
     }
 
+    #[inline]
+    fn httponly_end_or_prior(&self) -> usize {
+        self.secure_end_or_prior() +
+        if self.httponly {
+            HTTPONLY_ATTR.len()
+        } else {
+            0
+        }
+    }
+
     pub fn set_httponly(&mut self, httponly: bool) -> &mut Self {
         if self.httponly != httponly {
-            if httponly {
-                self.serialization.push_str("; HttpOnly");
-            } else {
-                let new_end = self.secure_end().unwrap_or_else(|| self.domain_path_end());
-                self.serialization.truncate(new_end);
-            }
+            let preceding_end = self.secure_end_or_prior();
+            let old_httponly = self.httponly;
+            self.set_flag_str(preceding_end, HTTPONLY_ATTR, old_httponly, httponly);
             self.httponly = httponly;
         }
+        self
+    }
+
+    pub fn expires(&self) -> Option<&str> {
+        self.expires.and_then(|_| self.expires_value_start().map(|s| self.slice(s..)))
+    }
+
+    #[inline]
+    fn expires_value_start(&self) -> Option<usize> {
+        self.expires.map(|_| self.httponly_end_or_prior() + EXPIRES_PREFIX.len())
+    }
+
+    pub fn expire(&mut self) -> &mut Self {
+        self.set_expires(Some(*EARLIEST_TM))
+    }
+
+    pub fn set_expires(&mut self, expires: Option<Tm>) -> &mut Self {
+        if self.expires.is_none() && expires.is_none() {
+            return self;
+        }
+        let expires_utc = expires.map(|e| e.to_utc());
+        if self.expires == expires_utc {
+            return self;
+        }
+
+        match expires_utc {
+            None => {
+                let trunc_from = self.httponly_end_or_prior();
+                self.serialization.truncate(trunc_from);
+            }
+            Some(expires_utc) => {
+                if self.expires.is_none() {
+                    self.serialization.push_str(EXPIRES_PREFIX);
+                } else {
+                    let trunc_from = self.httponly_end_or_prior() + EXPIRES_PREFIX.len();
+                    self.serialization.truncate(trunc_from);
+                }
+                self.serialization.push_str(&format!("{}", expires_utc.rfc822()));
+            }
+        }
+
+        self.expires = expires;
         self
     }
 
@@ -384,12 +344,34 @@ impl Cookie {
             None if 0 == new_value.len() => (None, None),
             None => {
                 let suffix = Some(self.take(preceding_end));
-                self.serialization.push_str("; ");
                 self.serialization.push_str(attr_name);
-                self.serialization.push_str("=");
                 self.serialization.push_str(new_value);
                 (Some(self.serialization.len()), suffix)
             }
+        }
+    }
+
+    #[inline]
+    fn set_flag_str(&mut self,
+                    preceding_end: usize,
+                    flag_str: &str,
+                    old_value: bool,
+                    new_value: bool) {
+        let suffix = {
+            let slice_from = preceding_end + if !old_value { 0 } else { flag_str.len() };
+            let s = self.slice(slice_from..);
+            if 0 == s.len() {
+                None
+            } else {
+                Some(s.to_owned())
+            }
+        };
+        self.serialization.truncate(preceding_end);
+        if new_value {
+            self.serialization.push_str(flag_str);
+        }
+        if let Some(ref s) = suffix {
+            self.serialization.push_str(s);
         }
     }
 
@@ -415,6 +397,12 @@ impl Cookie {
     #[inline]
     pub fn into_string(self) -> String {
         self.serialization
+    }
+
+    #[inline]
+    fn adjust(index: &mut usize, old: usize, new: usize) {
+        *index -= old;
+        *index += new;
     }
 }
 
@@ -452,14 +440,20 @@ mod tests {
         assert_eq!(c.cookie_pair(), ("foo", "bar"));
         assert_eq!(c.as_str(), "foo=bar");
 
+        c.set_domain("www.example.com");
+        c.set_secure(true);
+
         c.set_value("booz");
         assert_eq!(c.value(), "booz");
         assert_eq!(c.cookie_pair(), ("foo", "booz"));
-        assert_eq!(c.as_str(), "foo=booz");
+        assert_eq!(c.as_str(), "foo=booz; Domain=www.example.com; Secure");
         c.set_value("  bar  ");
         assert_eq!(c.value(), "bar");
         assert_eq!(c.cookie_pair(), ("foo", "bar"));
-        assert_eq!(c.as_str(), "foo=bar");
+        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com; Secure");
+
+        c.set_domain("");
+        c.set_secure(false);
 
         assert_eq!(c.domain(), None);
         c.set_domain("www.example.com");
@@ -564,15 +558,15 @@ mod tests {
         c.set_expires(None);
         assert_eq!(c.as_str(), "foo=bar");
         assert_eq!(c.expires(), None);
-        c.set_domain("www.example.com");
         c.set_expires(Some(tm));
+        c.set_domain("www.example.com");
         assert_eq!(c.as_str(),
-                   "foo=bar; Expires=Thu, 22 Mar 2012 14:53:18 GMT; Domain=www.example.com");
+                   "foo=bar; Domain=www.example.com; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
         c.set_expires(None);
         assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com");
         c.expire();
         assert_eq!(c.as_str(),
-                   "foo=bar; Expires=Sun, 01 Jan 1900 00:00:00 GMT; Domain=www.example.com");
+                   "foo=bar; Domain=www.example.com; Expires=Sun, 01 Jan 1900 00:00:00 GMT");
     }
 
     #[test]
