@@ -1,6 +1,8 @@
 [package]
+authors = ["Patrick Fernie <patrick.fernie@gmail.com>"]
 name = "cooky"
 version = "0.1.0"
-authors = ["Patrick Fernie <patrick.fernie@gmail.com>"]
 
 [dependencies]
+lazy_static = "0.2.2"
+time = "0.1.35"
