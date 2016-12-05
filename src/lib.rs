@@ -364,6 +364,8 @@ impl Cookie {
     }
 
     pub fn expire(&mut self) -> &mut Self {
+        self.set_value("");
+        self.set_max_age(0);
         self.set_expires(Some(*EARLIEST_TM))
     }
 
