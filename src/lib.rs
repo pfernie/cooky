@@ -14,8 +14,8 @@ lazy_static! {
 const DOMAIN_PREFIX: &'static str = "; Domain=";
 const PATH_PREFIX: &'static str = "; Path=";
 const MAX_AGE_PREFIX: &'static str = "; Max-Age=";
-const SECURE_ATTR: &'static str = "; Secure";
-const HTTPONLY_ATTR: &'static str = "; HttpOnly";
+const SECURE_FLAG: &'static str = "; Secure";
+const HTTPONLY_FLAG: &'static str = "; HttpOnly";
 const EXPIRES_PREFIX: &'static str = "; Expires=";
 
 trait RangeArg {
@@ -43,12 +43,6 @@ impl RangeArg for RangeTo<usize> {
     }
 }
 
-// FIXME: CookieOven
-// impl .bake() -> WarmCookie (String wrapper)
-// TODO: enforce Domain (option?)
-// TODO: enforce Path (option?)
-// TODO: non-local domain checking (option?)
-// TODO: custom attributes?
 pub struct Cookie {
     serialization: String,
     name_end: usize,
@@ -313,14 +307,14 @@ impl Cookie {
 
     #[inline]
     fn secure_end_or_prior(&self) -> usize {
-        self.max_age_end_or_prior() + if self.secure { SECURE_ATTR.len() } else { 0 }
+        self.max_age_end_or_prior() + if self.secure { SECURE_FLAG.len() } else { 0 }
     }
 
     pub fn set_secure(&mut self, secure: bool) -> &mut Self {
         if self.secure != secure {
             let preceding_end = self.max_age_end_or_prior();
             let old_secure = self.secure;
-            self.set_flag_str(preceding_end, SECURE_ATTR, old_secure, secure);
+            self.set_flag_str(preceding_end, SECURE_FLAG, old_secure, secure);
             self.secure = secure;
         }
         self
@@ -334,7 +328,7 @@ impl Cookie {
     fn httponly_end_or_prior(&self) -> usize {
         self.secure_end_or_prior() +
         if self.httponly {
-            HTTPONLY_ATTR.len()
+            HTTPONLY_FLAG.len()
         } else {
             0
         }
@@ -344,7 +338,7 @@ impl Cookie {
         if self.httponly != httponly {
             let preceding_end = self.secure_end_or_prior();
             let old_httponly = self.httponly;
-            self.set_flag_str(preceding_end, HTTPONLY_ATTR, old_httponly, httponly);
+            self.set_flag_str(preceding_end, HTTPONLY_FLAG, old_httponly, httponly);
             self.httponly = httponly;
         }
         self
@@ -487,17 +481,6 @@ fn adjust(index: &mut usize, old: usize, new: usize) {
     *index -= old;
     *index += new;
 }
-
-// TODO: impl From<cookie::Cookie>, Into<cookie::Cookie>
-//
-// TODO: impl FromStr
-// impl FromStr for Cookie {
-//     type Err = Error;
-//     fn from_str(s: &str) -> Result<Cookie, Error>
-//     {
-//         Cookie::parse(s)
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
