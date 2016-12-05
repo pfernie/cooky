@@ -504,151 +504,259 @@ mod tests {
     use super::Cookie;
     use time;
     #[test]
-    fn test_fields() {
+    fn name_value() {
         let mut c = Cookie::new("foo", "bar");
+        c.set_secure(true);
+
         assert_eq!(c.name(), "foo");
         assert_eq!(c.value(), "bar");
         assert_eq!(c.cookie_pair(), ("foo", "bar"));
-        assert_eq!(c.as_str(), "foo=bar");
+        assert_eq!(c.as_str(), "foo=bar; Secure");
 
         c.set_name("quux".into());
         assert_eq!(c.name(), "quux");
         assert_eq!(c.value(), "bar");
         assert_eq!(c.cookie_pair(), ("quux", "bar"));
-        assert_eq!(c.as_str(), "quux=bar");
+        assert_eq!(c.as_str(), "quux=bar; Secure");
         c.set_name("  foo  ".into());
         assert_eq!(c.name(), "foo");
         assert_eq!(c.value(), "bar");
         assert_eq!(c.cookie_pair(), ("foo", "bar"));
-        assert_eq!(c.as_str(), "foo=bar");
-
-        c.set_domain("www.example.com");
-        c.set_secure(true);
+        assert_eq!(c.as_str(), "foo=bar; Secure");
 
         c.set_value("booz");
         assert_eq!(c.value(), "booz");
         assert_eq!(c.cookie_pair(), ("foo", "booz"));
-        assert_eq!(c.as_str(), "foo=booz; Domain=www.example.com; Secure");
+        assert_eq!(c.as_str(), "foo=booz; Secure");
         c.set_value("  bar  ");
         assert_eq!(c.value(), "bar");
         assert_eq!(c.cookie_pair(), ("foo", "bar"));
-        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com; Secure");
+        assert_eq!(c.as_str(), "foo=bar; Secure");
+    }
 
-        c.set_domain("");
-        c.set_secure(false);
+    #[test]
+    fn field_combos() {
+        let expires = "Thu, 22 Mar 2012 14:53:18 GMT";
+        let tm = time::strptime(expires, "%a, %d %b %Y %T GMT").unwrap();
 
-        assert_eq!(c.domain(), None);
+        let mut c = Cookie::new("foo", "bar");
         c.set_domain("www.example.com");
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
         assert_eq!(c.domain(), Some("www.example.com"));
-        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com");
-        c.set_domain(" foo.example.com ");
-        assert_eq!(c.domain(), Some("foo.example.com"));
-        assert_eq!(c.as_str(), "foo=bar; Domain=foo.example.com");
-        c.set_domain("");
-        assert_eq!(c.domain(), None);
-        assert_eq!(c.as_str(), "foo=bar");
-        c.set_domain(" foo.example.com ");
-        assert_eq!(c.domain(), Some("foo.example.com"));
-        c.set_domain("  ");
-        assert_eq!(c.domain(), None);
-        assert_eq!(c.as_str(), "foo=bar");
-
-        assert_eq!(c.path(), None);
-        c.set_path("/foo/bus/bar");
-        assert_eq!(c.path(), Some("/foo/bus/bar"));
-        assert_eq!(c.as_str(), "foo=bar; Path=/foo/bus/bar");
-        c.set_path(" /moo/buz/baz ");
-        assert_eq!(c.path(), Some("/moo/buz/baz"));
-        assert_eq!(c.as_str(), "foo=bar; Path=/moo/buz/baz");
-        c.set_path("");
-        assert_eq!(c.path(), None);
-        assert_eq!(c.as_str(), "foo=bar");
-        c.set_path(" /moo/buz/baz ");
-        assert_eq!(c.path(), Some("/moo/buz/baz"));
-        c.set_path("  ");
-        assert_eq!(c.path(), None);
-        assert_eq!(c.as_str(), "foo=bar");
-
-        assert_eq!(c.max_age(), None);
-        c.set_max_age(1234);
-        assert_eq!(c.max_age(), Some(1234));
-        assert_eq!(c.max_age_str(), Some("1234"));
-        assert_eq!(c.as_str(), "foo=bar; Max-Age=1234");
-        c.set_max_age(0);
         assert_eq!(c.max_age(), None);
         assert_eq!(c.max_age_str(), None);
-        assert_eq!(c.as_str(), "foo=bar");
-        c.set_secure(true);
-        c.set_max_age(1234);
-        assert_eq!(c.max_age(), Some(1234));
-        assert_eq!(c.max_age_str(), Some("1234"));
-        assert_eq!(c.as_str(), "foo=bar; Max-Age=1234; Secure");
-        c.set_max_age(0);
-        assert_eq!(c.max_age(), None);
-        assert_eq!(c.max_age_str(), None);
-        assert_eq!(c.as_str(), "foo=bar; Secure");
-        c.set_secure(false);
-
-        c.set_domain("www.example.com");
-        assert_eq!(c.domain(), Some("www.example.com"));
-        assert_eq!(c.path(), None);
-        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com");
-        c.set_path("/foo/bus/bar");
-        assert_eq!(c.domain(), Some("www.example.com"));
-        assert_eq!(c.path(), Some("/foo/bus/bar"));
-        assert_eq!(c.as_str(),
-                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar");
-        c.set_domain("");
-        assert_eq!(c.domain(), None);
-        assert_eq!(c.path(), Some("/foo/bus/bar"));
-        assert_eq!(c.as_str(), "foo=bar; Path=/foo/bus/bar");
-        c.set_domain("www.example.com");
-        assert_eq!(c.domain(), Some("www.example.com"));
-        assert_eq!(c.path(), Some("/foo/bus/bar"));
-        assert_eq!(c.as_str(),
-                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar");
-
-        c.set_domain("");
-        assert_eq!(c.domain(), None);
-        c.set_domain("www.example.com");
-        c.set_domain("  ");
-        assert_eq!(c.domain(), None);
-        c.set_path("");
-        assert_eq!(c.path(), None);
-        c.set_path("/foo/bus/bar");
-        c.set_path("  ");
-        assert_eq!(c.path(), None);
-
-        assert_eq!(c.secure(), false);
-        c.set_secure(true);
-        assert_eq!(c.secure(), true);
-        assert_eq!(c.as_str(), "foo=bar; Secure");
-        c.set_secure(false);
-        assert_eq!(c.secure(), false);
-        assert_eq!(c.as_str(), "foo=bar");
-
         assert_eq!(c.httponly(), false);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
+        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com");
+        c.set_max_age(60);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), false);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
+        assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com; Max-Age=60");
         c.set_httponly(true);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
         assert_eq!(c.httponly(), true);
-        assert_eq!(c.as_str(), "foo=bar; HttpOnly");
-        c.set_httponly(false);
-        assert_eq!(c.httponly(), false);
-        assert_eq!(c.as_str(), "foo=bar");
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Max-Age=60; HttpOnly");
+        c.set_path("/foo/bus/bar");
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; HttpOnly");
+        c.set_expires(Some(tm));
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.secure(), false);
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
+        c.set_secure(true);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; Secure; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
 
-        c.set_secure(true);
-        c.set_httponly(true);
-        assert_eq!(c.as_str(), "foo=bar; Secure; HttpOnly");
+        c.set_name("quux");
+        assert_eq!(c.name(), "quux");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "quux=bar; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; Secure; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
+        c.set_value("barr");
+        assert_eq!(c.name(), "quux");
+        assert_eq!(c.value(), "barr");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "quux=barr; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; Secure; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
+
+        c.set_name("foo");
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "barr");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "foo=barr; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; Secure; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
+        c.set_value("bar");
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), Some("/foo/bus/bar"));
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Path=/foo/bus/bar; Max-Age=60; Secure; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
+
+        c.set_path("");
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some("Thu, 22 Mar 2012 14:53:18 GMT"));
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Max-Age=60; Secure; \
+                    HttpOnly; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
+        c.set_expires(None);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), Some("www.example.com"));
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(),
+                   "foo=bar; Domain=www.example.com; Max-Age=60; Secure; \
+                    HttpOnly");
+        c.set_domain("");
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), None);
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), true);
+        assert_eq!(c.as_str(), "foo=bar; Max-Age=60; Secure; HttpOnly");
         c.set_secure(false);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), None);
+        assert_eq!(c.max_age(), Some(60));
+        assert_eq!(c.max_age_str(), Some("60"));
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
+        assert_eq!(c.as_str(), "foo=bar; Max-Age=60; HttpOnly");
+        c.set_max_age(0);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), None);
+        assert_eq!(c.max_age(), None);
+        assert_eq!(c.max_age_str(), None);
+        assert_eq!(c.httponly(), true);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
         assert_eq!(c.as_str(), "foo=bar; HttpOnly");
-        c.set_secure(true);
         c.set_httponly(false);
-        assert_eq!(c.as_str(), "foo=bar; Secure");
-        c.set_secure(false);
+        assert_eq!(c.name(), "foo");
+        assert_eq!(c.value(), "bar");
+        assert_eq!(c.domain(), None);
+        assert_eq!(c.max_age(), None);
+        assert_eq!(c.max_age_str(), None);
+        assert_eq!(c.httponly(), false);
+        assert_eq!(c.path(), None);
+        assert_eq!(c.expires(), None);
+        assert_eq!(c.expires_str(), None);
+        assert_eq!(c.secure(), false);
         assert_eq!(c.as_str(), "foo=bar");
     }
 
     #[test]
-    fn test_expires() {
+    fn expires() {
         let expires = "Thu, 22 Mar 2012 14:53:18 GMT";
         let tm = time::strptime(expires, "%a, %d %b %Y %T GMT").unwrap();
         let mut c = Cookie::new("foo", "bar");
@@ -669,11 +777,11 @@ mod tests {
         assert_eq!(c.as_str(), "foo=bar; Domain=www.example.com");
         c.expire();
         assert_eq!(c.as_str(),
-                   "foo=bar; Domain=www.example.com; Expires=Sun, 01 Jan 1900 00:00:00 GMT");
+                   "foo=; Domain=www.example.com; Expires=Sun, 01 Jan 1900 00:00:00 GMT");
     }
 
     #[test]
-    fn test_ws_trim() {
+    fn ws_trim() {
         let c = Cookie::new("  foo", "  bar");
         assert_eq!(c.name(), "foo");
         assert_eq!(c.value(), "bar");
