@@ -106,6 +106,9 @@ impl Cookie {
         if let Some(ref mut index) = self.path_end {
             adjust(index, old_name_end, new_name_end);
         }
+        if let Some((_, ref mut index)) = self.max_age {
+            adjust(index, old_name_end, new_name_end);
+        }
 
         name.push_str(self.slice(old_name_end..));
         self.serialization = name;
@@ -261,7 +264,7 @@ impl Cookie {
 
     #[inline]
     fn max_age_end_or_prior(&self) -> usize {
-        self.path_end.unwrap_or_else(|| self.path_end_or_prior())
+        self.max_age.map(|(_, e)| e).unwrap_or_else(|| self.path_end_or_prior())
     }
 
     #[inline]
