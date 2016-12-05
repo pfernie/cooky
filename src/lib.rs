@@ -13,6 +13,7 @@ lazy_static! {
 
 const DOMAIN_PREFIX: &'static str = "; Domain=";
 const PATH_PREFIX: &'static str = "; Path=";
+const MAX_AGE_PREFIX: &'static str = "; Max-Age=";
 const SECURE_ATTR: &'static str = "; Secure";
 const HTTPONLY_ATTR: &'static str = "; HttpOnly";
 const EXPIRES_PREFIX: &'static str = "; Expires=";
@@ -59,7 +60,7 @@ pub struct Cookie {
     // when present, with Expires last to simplify replacing its value
     domain_end: Option<usize>,
     path_end: Option<usize>,
-    // FIXME: impl Max-Age
+    max_age: Option<(u64, usize)>,
     secure: bool,
     httponly: bool,
     expires: Option<Tm>,
@@ -77,6 +78,7 @@ impl Cookie {
             value_end: value_end,
             domain_end: None,
             path_end: None,
+            max_age: None,
             secure: false,
             httponly: false,
             expires: None,
@@ -149,6 +151,9 @@ impl Cookie {
         if let Some(ref mut index) = self.path_end {
             adjust(index, old_value_end, new_value_end);
         }
+        if let Some((_, ref mut index)) = self.max_age {
+            adjust(index, old_value_end, new_value_end);
+        }
 
         self
     }
@@ -197,6 +202,9 @@ impl Cookie {
         if let Some(ref mut index) = self.path_end {
             adjust(index, old_domain_end, new_domain_end);
         }
+        if let Some((_, ref mut index)) = self.max_age {
+            adjust(index, old_domain_end, new_domain_end);
+        }
 
         self
     }
@@ -217,6 +225,7 @@ impl Cookie {
 
     pub fn set_path(&mut self, path: &str) -> &mut Self {
         let path = path.trim();
+        let old_path_end = self.path_end_or_prior();
         let new_path_end = {
             let old_value_start = self.path_value_start();
             let old_value_end = self.path_end;
@@ -235,6 +244,63 @@ impl Cookie {
         };
 
         self.path_end = new_path_end;
+        let new_path_end = self.path_end_or_prior();
+        if let Some((_, ref mut index)) = self.max_age {
+            adjust(index, old_path_end, new_path_end);
+        }
+        self
+    }
+
+    pub fn max_age(&self) -> Option<u64> {
+        self.max_age.map(|(a, _)| a)
+    }
+
+    pub fn max_age_str(&self) -> Option<&str> {
+        self.max_age.and_then(|(_, e)| self.max_age_value_start().map(|s| self.slice(s..e)))
+    }
+
+    #[inline]
+    fn max_age_end_or_prior(&self) -> usize {
+        self.path_end.unwrap_or_else(|| self.path_end_or_prior())
+    }
+
+    #[inline]
+    fn max_age_value_start(&self) -> Option<usize> {
+        self.max_age.map(|_| self.path_end_or_prior() + MAX_AGE_PREFIX.len())
+    }
+
+    pub fn set_max_age(&mut self, max_age: u64) -> &mut Self {
+        if self.max_age.map(|(v, _)| v).unwrap_or(0) == max_age {
+            return self;
+        }
+
+        let max_age_end = if 0 == max_age {
+            let s = self.path_end_or_prior();
+            let e = self.max_age.map(|(_, e)| e).unwrap();
+            self.serialization.drain(s..e);
+            None
+        } else {
+            let suffix = if let Some((_, e)) = self.max_age {
+                let s = self.max_age_value_start().unwrap();
+                self.truncate_and_take(s, e);
+                None
+            } else {
+                let e = self.path_end_or_prior();
+                let suffix = self.take(e);
+                self.serialization.push_str(MAX_AGE_PREFIX);
+                suffix
+            };
+
+            self.serialization.push_str(&format!("{}", max_age));
+            let max_age_end = self.serialization.len();
+            if let Some(ref s) = suffix {
+                self.serialization.push_str(s);
+            }
+
+            Some(max_age_end)
+        };
+
+        self.max_age = max_age_end.map(|e| (max_age, e));
         self
     }
 
@@ -244,12 +310,12 @@ impl Cookie {
 
     #[inline]
     fn secure_end_or_prior(&self) -> usize {
-        self.path_end_or_prior() + if self.secure { SECURE_ATTR.len() } else { 0 }
+        self.max_age_end_or_prior() + if self.secure { SECURE_ATTR.len() } else { 0 }
     }
 
     pub fn set_secure(&mut self, secure: bool) -> &mut Self {
         if self.secure != secure {
-            let preceding_end = self.path_end_or_prior();
+            let preceding_end = self.max_age_end_or_prior();
             let old_secure = self.secure;
             self.set_flag_str(preceding_end, SECURE_ATTR, old_secure, secure);
             self.secure = secure;
@@ -281,7 +347,11 @@ impl Cookie {
         self
     }
 
-    pub fn expires(&self) -> Option<&str> {
+    pub fn expires(&self) -> Option<Tm> {
+        self.expires
+    }
+
+    pub fn expires_str(&self) -> Option<&str> {
         self.expires.and_then(|_| self.expires_value_start().map(|s| self.slice(s..)))
     }
 
@@ -337,13 +407,13 @@ impl Cookie {
                 (None, None)
             }
             Some(old_value_start) => {
-                let suffix = Some(self.truncate_and_take(old_value_start, old_value_end.unwrap()));
+                let suffix = self.truncate_and_take(old_value_start, old_value_end.unwrap());
                 self.serialization.push_str(new_value);
                 (Some(self.serialization.len()), suffix)
             }
             None if 0 == new_value.len() => (None, None),
             None => {
-                let suffix = Some(self.take(preceding_end));
+                let suffix = self.take(preceding_end);
                 self.serialization.push_str(attr_name);
                 self.serialization.push_str(new_value);
                 (Some(self.serialization.len()), suffix)
@@ -383,14 +453,21 @@ impl Cookie {
     }
 
     #[inline]
-    fn truncate_and_take(&mut self, truncate_from: usize, take_from: usize) -> String {
-        let s = self.slice(take_from..).to_owned();
+    fn truncate_and_take(&mut self, truncate_from: usize, take_from: usize) -> Option<String> {
+        let taken = {
+            let s = self.slice(take_from..);
+            if 0 == s.len() {
+                None
+            } else {
+                Some(s.to_owned())
+            }
+        };
         self.serialization.truncate(truncate_from);
-        s
+        taken
     }
 
     #[inline]
-    fn take(&mut self, from: usize) -> String {
+    fn take(&mut self, from: usize) -> Option<String> {
         self.truncate_and_take(from, from)
     }
 
@@ -487,6 +564,26 @@ mod tests {
         assert_eq!(c.path(), None);
         assert_eq!(c.as_str(), "foo=bar");
 
+        assert_eq!(c.max_age(), None);
+        c.set_max_age(1234);
+        assert_eq!(c.max_age(), Some(1234));
+        assert_eq!(c.max_age_str(), Some("1234"));
+        assert_eq!(c.as_str(), "foo=bar; Max-Age=1234");
+        c.set_max_age(0);
+        assert_eq!(c.max_age(), None);
+        assert_eq!(c.max_age_str(), None);
+        assert_eq!(c.as_str(), "foo=bar");
+        c.set_secure(true);
+        c.set_max_age(1234);
+        assert_eq!(c.max_age(), Some(1234));
+        assert_eq!(c.max_age_str(), Some("1234"));
+        assert_eq!(c.as_str(), "foo=bar; Max-Age=1234; Secure");
+        c.set_max_age(0);
+        assert_eq!(c.max_age(), None);
+        assert_eq!(c.max_age_str(), None);
+        assert_eq!(c.as_str(), "foo=bar; Secure");
+        c.set_secure(false);
+
         c.set_domain("www.example.com");
         assert_eq!(c.domain(), Some("www.example.com"));
         assert_eq!(c.path(), None);
@@ -554,7 +651,8 @@ mod tests {
         assert_eq!(c.expires(), None);
         c.set_expires(Some(tm));
         assert_eq!(c.as_str(), "foo=bar; Expires=Thu, 22 Mar 2012 14:53:18 GMT");
-        assert_eq!(c.expires(), Some(expires));
+        assert_eq!(c.expires(), Some(tm));
+        assert_eq!(c.expires_str(), Some(expires));
         c.set_expires(None);
         assert_eq!(c.as_str(), "foo=bar");
         assert_eq!(c.expires(), None);
